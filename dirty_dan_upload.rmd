@@ -1,0 +1,381 @@
+---
+title: "Dirty Dan Had a Plan"
+author: Marc
+date: 2020-05-23
+output: html_document
+description: "One play to turn around a game."
+tags:
+  - sports
+  - nfl
+  - chiefs
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+echo = FALSE,
+message = FALSE,
+warning = FALSE
+)
+
+library(nflfastR)
+library(tidyverse)
+library(nflscrapR)
+library(dplyr)
+library(tidyr)
+library(pins)
+library(lubridate)
+library(ggplot2)
+library(ggimage)
+library(furrr)
+library(ggrepel)
+
+seasons <- 2000:2019
+
+pbp <- purrr::map_df(seasons, function(x) {
+  readRDS(
+    url(
+      glue::glue("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_{x}.rds")
+    )
+  )
+})
+
+punts <- pbp %>%
+  filter(str_detect(desc,"Punt formation")==T | str_detect(desc,"punt formation")==T) %>%
+  filter(str_detect(desc, "Aborted")==F) %>%
+  filter(play_type %in% c("run","pass")) %>%
+  mutate(got_it = case_when(
+    yards_gained >= ydstogo ~ "Converted",
+    T ~ "Failed"
+  ),
+  long_short = case_when(
+    ydstogo  <= 4 ~ "short",
+    T ~ "long"
+  ),
+  field_pos = case_when(
+    yardline_100 >= 60 ~ "Inside Own 40",
+    T ~ "Past Own 40"
+  ))
+
+
+punts <- punts %>%
+mutate(play_type = case_when(
+play_type == "pass" ~ "Pass",
+play_type == "run" ~ "Run",
+T ~ "Other"
+))
+
+```
+
+
+## On the Brink of Disaster
+
+The lowest of lows.  We all remember the first quarter and the start of the second of KC's divisional round game against the Texans.  Down 24-0 and showing not much that inspire hope that they were going to win this game.  Chiefs fans have been here before... but today is different.  This is a different team, one that can score at will and erase any deficit if given the chance.  A big 3rd down stop, long kick off return, and quick touchdown gives the Chiefs a spark of hope. 24-7 and a Houston 3 and out.  A chance... the energy is starting to come back. Then this happens.
+
+```{r dan_video}
+blogdown::shortcode("twitter","1216468395555684352")
+
+```
+
+Absolutely amazing. Dirty Dan Sorensen with a spectacular open field tackle to turn the ball over on downs.  The Chiefs would score and continue scoring until they feasted on a delicious 50-burger and moved on to the AFC Championship game.  One Lombardi trophy later and the rest is history.
+
+I wanted to look at the data behind this play and see if I could put some context behind Dan's incredible play and the inexplicable decision to punt in this situation.  What I found was that this is an absolutely unique play and an example of one of the most heads-up performance by a defensive player this century.
+
+## A quick primer of fake punts
+
+Let's look at every fake punt since 2000.  Using the play-by-play data collected by [nflfastR](https://mrcaseb.github.io/nflfastR/) we took every play where the offensive team lined up in punt formation and ran or passed without fumbling or otherwise screwing up the punt.
+```{r punts_num}
+
+punts_season <- punts %>%
+  group_by(season) %>%
+  summarise(n=n())
+
+ggplot(punts_season,aes(x=season,y=n)) +
+  theme_minimal() +
+  geom_bar(stat="identity",aes(fill=n)) +
+  scale_fill_distiller(palette =7,limits=c(0,max(punts_season$n)),direction = 1) +
+  labs(y="Number of Fake Punts",x="Season",title="We're in the Golden Age of Faking") +
+  theme(
+    legend.position = "none",
+    plot.background = element_rect(fill="#fffcf5",color="transparent")
+    
+  )
+
+```
+
+Since 2000, there have been `r sum(punts_season$n)` fake punts and they have been successful 58% of the time.  The general trend seems to be that fake punts have been increasing. I would imagine that teams are using analytics more to assess the risk/reward of going for it.
+
+```{r converted}
+punts_season <- punts %>%
+  group_by(season,got_it) %>%
+  summarise(n=n())
+
+punts_season$got_it <- factor(punts_season$got_it,levels = c("Failed","Converted"))
+
+ggplot(punts_season,aes(x=season,y=n)) +
+  theme_minimal() +
+  geom_bar(stat="identity",aes(fill=got_it),position="fill") +
+  scale_fill_brewer(type="seq",palette =7) +
+  labs(y="Percentage of Punts",x="Season",title="They're Faking it and Mostly Making It") +
+  theme(
+    plot.background = element_rect(fill="#fffcf5",color="transparent"),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  ) +
+  scale_y_continuous(labels = scales::percent_format())
+
+```
+
+There's a good amount of variation year to year, probably due mostly to the small sample size of the number of fake punts in a year, but teams seem to be doing better than even when faking.  They haven't failed more times than succeeded since 2014.
+
+For the last bit of fake punt analysis before we look at Dan's play, lets see what teams chose to do, run or pass, based on yards to go and how it worked out for them. I added jitter (random movement on the x-axis) to the points to try an alleviate some of the overplotting, the data available does not have fractions of yards included.
+
+``` {r runpass}
+
+good_poly <- data.frame(x=c(0,0,max(punts$ydstogo),max(punts$ydstogo)),y=c(0,max(punts$yards_gained),max(punts$yards_gained),max(punts$ydstogo)))
+bad_poly <- data.frame(x=c(0,0,max(punts$ydstogo),max(punts$ydstogo)),y=c(0,min(punts$yards_gained),min(punts$yards_gained),max(punts$ydstogo)))
+
+
+
+ggplot(punts,(aes(x=ydstogo, y = yards_gained))) +
+  geom_polygon(data=good_poly,aes(x=x,y=y),fill="green",alpha=.15) +
+  geom_polygon(data=bad_poly,aes(x=x,y=y),fill="red",alpha=.15) +
+  geom_jitter(aes(color=play_type)) +
+  scale_x_continuous(breaks = seq(0:15)) +
+  scale_color_brewer(type="qual",palette = 6) +
+  coord_cartesian(xlim = c(0,15)) +
+  facet_wrap(~play_type) +
+  theme_minimal() +
+  theme(
+    panel.grid.minor.x = element_blank(),
+    legend.position = "none",
+    strip.text = element_text(face="bold",size=16),
+    plot.background = element_rect(fill="#fffcf5",color="transparent")
+  ) +
+  labs(
+    y="Yards Gained",x= "Yards to Go", title = "What Makes the Trickery Work"
+  )
+
+```
+
+```{r runpass2} 
+ggplot(punts,aes(x=ydstogo)) +
+  geom_bar(aes(fill=got_it)) +
+  facet_wrap(vars(play_type),ncol = 2) +
+  scale_x_continuous(limits = c(0,10),breaks = seq(1:10)) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face="bold",size=16),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    plot.background = element_rect(fill="#fffcf5",color="transparent")
+  ) +
+  scale_fill_manual(breaks = c("Converted","Failed"), values = c("olivedrab","darkred")) +
+  labs(
+    x= "Yards to Go", y= "Number of Attempts",title="Fake Out Success Rates"
+  )
+
+```
+
+There are a couple of things I notice here.  If you have 4th and 1... roll out the punt unit and run it. Fake punts from this distance convert 89% of the time.  Even running from 4th and 3 will convert 3 times out of four.  At 4th and 4 it's about 50/50 and holds until the sample size drops off to very small attempts past 10 yards.
+
+Also, interestingly, it seems like running on your fake punt is a higher risk/reward as there are much more negative yards plays but also the potential to break off bigger gains.  Running off a fake from 4th and long is a recipe for disaster.
+
+## Back to our game
+
+OK, so I remember immediately after the Houston fake punt happened there was reaction from the commentators about how bad a decision this was, how obvious of a fake it was, and how it was destined to fail. I can't breakdown the tape well, they probably did tip something, but I can look at data and put this play into context.
+
+## Was the fake punt decision bad?
+
+Let's look at some historical context to see where this fake punt call lies.  There are a few factors that are generally mentioned when criticizing this call; the lead the Texans had built up, their field position when punting, and the decision to do a direct snap run.  
+
+Let's add in field position to the last chart and look at all of those factors.
+
+```{r plotmore}
+punts_convert <- punts %>%
+  group_by(ydstogo,field_pos,play_type,got_it) %>%
+  summarise(n= n()) %>%
+  mutate(pct = n/sum(n))
+
+
+ggplot(punts_convert,aes(x=ydstogo,y=n)) +
+  geom_bar(aes(fill=got_it),stat="identity") +
+  facet_wrap(vars(play_type,field_pos),ncol = 2) +
+  scale_x_continuous(limits = c(0,10),breaks = seq(1:10)) + 
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face="bold",size=16),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    plot.background = element_rect(fill="#fffcf5",color="transparent")
+  ) +
+  scale_fill_manual(breaks = c("Converted","Failed"), values = c("olivedrab","darkred")) +
+  labs(
+    x= "Yards to Go", y= "Number of Attempts",title="Field Position and Play Call"
+  )
+
+```
+
+From 4th and 1, teams have been very successful faking inside their own 40, converting **97%** of the time. I know, using the 40 yard line as a split is kind of arbitrary, but I wanted to delineate between something deeper inside your territory and the midfield area where a failure to convert would be less 'risky'.  Plus the split was pretty close with 195 attempts occurring inside the 40 and 146 beyond.
+
+The Texans fake punt was a run from 4th and 4 in their own territory. Prior to this play, this down and distance had been successful 4/8 times attempted.  The conversion rate for 4th and 3 is 13/16 (81%).
+
+The next chart is going to show you something very interesting.  When we look at the number of fake punt attempts and plot it with time of game remaining and the win probability of the punting team, several things stand out.  Keep in mind, our play is the big red point.
+
+```{r play_wpa}
+
+punts_post <- punts %>%
+  mutate(is_dirty = case_when(
+    game_id == 2020011200 & play_id == 1465 ~ "dirty",
+    T ~ "not"
+  ))
+
+
+time_wpa_plot <- ggplot(punts_post,aes(x=game_seconds_remaining, y = wp)) 
+
+
+time_wpa_plot + 
+  stat_density_2d(geom = "raster",aes(fill = after_stat(density)), contour = FALSE) +
+  theme_minimal() +
+  scale_fill_distiller(type= "div", palette = 5) +
+  geom_point(aes(color=is_dirty,size=is_dirty)) +
+  scale_color_manual(breaks = c("dirty","not"), values=c("#e31837","black")) + 
+  scale_size_manual(breaks = c("dirty","not"), values = c(5,1)) +
+  scale_x_reverse(labels = lubridate::seconds_to_period, breaks = c(0,15*60,30*60,45*60,60*60)) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme(
+    legend.position = "none",
+    plot.background = element_rect(fill="#fffcf5",color="transparent")
+  ) +
+  labs(x="Game Time Remaining",y = "Punting Team Win Percentage",title = "Fake Punts During Game Flow")
+
+```
+
+
+Teams tend to fake punts in three general scenarios.
+
+1. It's the first quarter and the teams are close in score.  A punting team tries to gain an edge.
+
+2. It's the third quarter and the punting team is trailing badly.  They need something to get back in the game.
+
+3. It's late in the forth quarter and victory is almost a certainty.  Teams attempt to use the fake punt to run out the clock and end the game.
+
+The Texans fake punt met none of the scenarios and is almost on the frontier of fake punt decisions.  Very very rarely does a team have a commanding lead and fake a punt in this scenario.
+
+In fact, only **twice** since 2000 has a team with a higher winning probability faked a punt in the first half.  One was in 2003, but the other was earlier in the year when the Ravens faked a punt against the Dolphins leading 35-3.
+
+```{r rav_video}
+blogdown::shortcode("twitter","1170764479321133056")
+
+```
+
+Maybe this was Bill O'Brien's inspiration to dial up this play?  I don't know, but the Chiefs ain't the Dolphins.
+
+So was this fake punt a bad idea?  Looking at the data... I don't know.  This play had at least an even probability of success. With a 90% win probability and the chance to put the dagger in your opponent in the second quarter, would you take those odds? Teams with the lead tend to play be more conservative, hold the lead, use field position. Looking at historics, the Chiefs special teams unit, and our man Dirty Dan, should have been caught flat footed...
+
+## But they weren't! How important was this play?
+
+Obviously they were ready for this play.  Be it good football fundamentals, scouting, or on field observation, Dan Sorensen smoked Justin Reid on the direct snap forcing the turn over.  So statistically, how cool was this play?
+
+``` {r epic_stop}
+
+ggplot(punts_post, aes(x=wpa, y = epa)) +
+geom_point(aes(color=is_dirty,size=is_dirty)) +
+coord_cartesian(xlim = c(-.25,.25)) +
+scale_color_manual(breaks = c("dirty","not"), values=c("#e31837","black")) + 
+scale_size_manual(breaks = c("dirty","not"), values = c(5,1)) +
+theme_minimal()+
+theme(
+legend.position = "none",
+plot.background = element_rect(fill="#fffcf5",color="transparent")
+
+) +
+labs(x = "Win Probability Added", y = "Expected Points Added", title = "Where this Stop Stacks Up")
+
+
+```
+
+According to the metrics, this play was a pretty standard fake punt stop  Gave the Chiefs about a 4% boost in win probability and took away about 2.5 points of the Texans EPA.  Pretty much right in the middle of what some metrics would tell you about the outcome of the play.
+
+## It was absolutely not average!
+
+But here's where I don't think the metrics will give this play the credit it deserves.  There is debate about game 'momentum' and whether or not it's a real thing.  As a data guy it's hard to say 'this thing that we can't apply a quantifiable metric to is important', but I do believe that this was an outsized moment.  Making a huge special teams play in the playoffs goes beyond the statistics.
+
+Let's look at an earlier chart but only at the postseason fakes.
+
+``` {r epic_stop_solo}
+
+punts_post_post <- punts %>%
+  filter(season_type == "POST") %>%
+  mutate(is_dirty = case_when(
+    game_id == 2020011200 & play_id == 1465 ~ "dirty",
+    T ~ "not"
+  ))
+
+ggplot(punts_post_post,aes(x=game_seconds_remaining, y = wp)) +
+  stat_density_2d(geom = "raster",aes(fill = after_stat(density)), contour = FALSE) +
+  theme_minimal() +
+  scale_fill_distiller(type= "div", palette = 5) +
+  geom_point(aes(color=is_dirty,size=is_dirty)) +
+  scale_color_manual(breaks = c("dirty","not"), values=c("#e31837","black")) + 
+  scale_size_manual(breaks = c("dirty","not"), values = c(5,1)) +
+  scale_x_reverse(labels = lubridate::seconds_to_period, breaks = c(0,15*60,30*60,45*60,60*60)) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme(
+    legend.position = "none",
+    plot.background = element_rect(fill="#fffcf5",color="transparent")
+    
+  ) +
+  labs(x="Game Time Remaining",y = "Punting Team Win Percentage",title = "Gameflow and Postseason Fakes")
+
+
+```
+
+**Never** in the post season has a team been above 54% win probability (except final clock killing) and faked a punt. Looking at the data, in both the regular and post season, there was no indication that would have shown the Texans should have faked. The few teams that did fake in similar situations usually found success. The fact that this play was sniffed out and stuffed is a testament to the team preparation and individual play.
+
+Dan Sorenson's stop was one of the main catalysts to propel the Chiefs to victory and their second Super Bowl Title. Dan's punt block as a single play only added 3.4% to the Chief's win probability. But I would contend that this is one of those plays that transcends statistics and was the pivotal turning point in the Lombardi campaign. Does 'momentum' exist? Decide for yourself.
+
+```{r game_prob}
+pbp19 <-   readRDS(
+  url(
+    glue::glue("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_2019.rds")
+  )
+)
+
+roster <- readRDS(url("https://github.com/guga31bb/nflfastR-data/raw/master/roster-data/roster.rds"))
+dirty_dan <- "Daniel Sorensen"
+
+
+df_dan <- roster %>%
+  filter(teamPlayers.displayName %in% dirty_dan & team.abbr == "KC") %>%
+  select(teamPlayers.displayName,teamPlayers.headshot_url) %>%
+  distinct()
+
+big_game <- pbp19 %>%
+  filter(game_id == 2020011200) %>%
+  select(play_id, game_seconds_remaining, home_wp, away_wp) %>%
+  arrange(desc(play_id)) %>%
+  mutate(home_wp = case_when(
+    is.na(home_wp) ==T ~ lag(home_wp),
+    T ~ home_wp
+  ),
+  away_wp = case_when(
+    is.na(away_wp) ==T ~ lag(away_wp),
+    T ~ away_wp
+  ))
+
+ggplot(big_game,aes(x=(game_seconds_remaining))) +
+  geom_line(aes(y=home_wp),color="#e31837",size=1) +
+  geom_path(aes(y=away_wp),color="#022030",size=1) +
+  geom_vline(data=subset(big_game, play_id==1465),aes(xintercept = game_seconds_remaining),size=2.5,color="#e31837") +
+  geom_image(data=df_dan,aes(y=.5, x=2312,image = teamPlayers.headshot_url),asp=2,size=.10) +
+  scale_x_reverse(labels = lubridate::seconds_to_period, breaks = c(0,15*60,30*60,45*60,60*60)) +
+  scale_y_continuous(labels=scales::percent_format()) +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill="#fffcf5",color="transparent")
+  ) +
+  labs(y= "Win Probability", x= "Game Time Remaining", title= "A Championship Defining Moment")
+
+```
+
+The code for this project can be found in [this GitHub repo](https://github.com/DataBrahs/Dirty-Dan/).
